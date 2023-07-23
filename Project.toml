@@ -1,0 +1,10 @@
+name = "ProfileTools"
+uuid = "d490ab1e-3959-4db1-be42-6cc70c1a8fba"
+authors = ["August T <augustt198@gmail.com>"]
+version = "0.1.0"
+
+[deps]
+CodeTracking = "da1fd8a2-8d9e-5ec2-8556-3022fb5608a2"
+InteractiveUtils = "b77e0a4c-d291-57a0-90e8-8db25a27a240"
+Profile = "9abbd945-dff8-562f-b5e8-e1ebf5ef1b79"
+StatsBase = "2913bbd2-ae8a-5f71-8c99-4fb6c76f3a91"
