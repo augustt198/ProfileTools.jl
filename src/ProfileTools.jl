@@ -10,7 +10,6 @@ include("llvmdis.jl")
 
 export @perf
 
-
 const IPtr = UInt64
 
 abstract type ProfiledFunction end
@@ -39,6 +38,7 @@ end
 @kwdef struct ProfileConfig
     c_funcs::Bool = false
     precompile::Bool = true
+    trials::Int = 1
 end
 
 mutable struct ProfileMenu <: TerminalMenus._ConfiguredMenu{TerminalMenus.Config}
@@ -90,10 +90,11 @@ function parse_macro_args(raw_args)
     end
     
     bad = setdiff(keys(kwargs), fieldnames(ProfileConfig))
-    !isempty(bad) && throw(ArgumentError("Unknown arguments: $(join(repr.(bad), bad))"))
+    !isempty(bad) && throw(ArgumentError("Unknown arguments: $(join(repr.(bad), ", "))"))
 
     for (k, v) in kwargs
-        (v isa fieldtype(ProfileConfig, k)) || throw(ArgumentError("Bad argument type: $k"))
+        typ = fieldtype(ProfileConfig, k)
+        (v isa typ) || throw(ArgumentError("Bad argument type: $k (want $typ)"))
     end
     
     return ProfileConfig(; kwargs...)
@@ -104,13 +105,15 @@ macro perf(expr, args...)
 
     sym = gensym("profilee")
     fn_def = quote
-        @noinline $(sym)() = Base.donotdelete($expr)
+        @noinline $(sym)() = for i in 1:$(conf.trials)
+            Base.donotdelete($expr)
+        end
     end
     Core.eval(__module__, fn_def)
 
     quote
         len_start = Profile.len_data()
-        $(conf.precompile) ? $(esc(sym))() : nothing
+        $(conf.precompile) && precompile($(esc(sym)), ())
         Profile.@profile $(esc(sym))()
         len_end = Profile.len_data()
 
@@ -161,13 +164,11 @@ function terminalIPs(conf, len_start=1, len_end=nothing)
 
     data = ProfileData()
 
-    c_ip::IPtr = 0
     first = true
     for ip in samples
         if first
             st = lookup(data, ip)
             if st[end].from_c
-                (c_ip == 0) && (c_ip = ip) # forgot what the point was...
                 # push the IP if c functions are being recorded
                 # otherwise, continue up until a julia IP
                 if conf.c_funcs
@@ -176,9 +177,7 @@ function terminalIPs(conf, len_start=1, len_end=nothing)
                 end
             else
                 push!(data.ips, ip)
-                #data.c_callees[st]
                 first = false
-                c_ip = 0
             end
         else
             (ip == 0) && (first = true)
@@ -189,15 +188,8 @@ function terminalIPs(conf, len_start=1, len_end=nothing)
 end
 
 function doit(conf, data=terminalIPs(conf))
-    mimap = Dict{Core.MethodInstance, Vector{Int}}()
-    #stmap = Dict{UInt64, Vector{StackTraces.StackFrame}}()
-
-    cmap = countmap(data.ips)
-
     functions = ProfiledFunction[]
 
-    ignore = 0
-    fromc = 0
     julia_functions = Dict{Core.MethodInstance, ProfiledJuliaFunction}()
     for ip in data.ips
         st = lookup(data, ip)
@@ -207,21 +199,10 @@ function doit(conf, data=terminalIPs(conf))
                 pf = get!(() -> ProfiledJuliaFunction(mi, []), julia_functions, mi)
 
                 push!(pf.ips, ip)
-                !haskey(mimap, mi) && (mimap[mi] = [])
-                push!(mimap[mi], st[end].line)
-            else
-                println("ignoring:: $st")
-                #println(">>> $mi")
-                ignore += 1
             end
-        else
-            fromc += 1
-            println(">>>>>>>>")
-            map(f -> println("$f // $(f.pointer) :: $ip"), st)
         end
     end
 
-    c_funcs = Dict{Symbol, Vector{IPtr}}()
     c_functions = Dict{Symbol, ProfiledCFunction}()
     for ip in data.c_ips
         st = lookup(data, ip)
@@ -230,7 +211,6 @@ function doit(conf, data=terminalIPs(conf))
         pf = get!(() -> ProfiledCFunction(name, [], string(frame.file)), c_functions, name)
 
         push!(pf.ips, ip)
-        #c_funcs[frame.func] = push!(get(c_funcs, frame.func, []), ip)
     end
 
     functions = values(julia_functions) ∪ values(c_functions)
@@ -240,7 +220,7 @@ function doit(conf, data=terminalIPs(conf))
     menu = ProfileMenu(functions, total_samples)
 
     while (choice = request("Profiler", menu)) != -1
-        paged_io() do (io)
+        paged_io() do io
             showprofile(io, data, functions[choice])
         end
         println()
@@ -249,52 +229,50 @@ function doit(conf, data=terminalIPs(conf))
     return
 end
 
-function print_header(io, mi::Core.MethodInstance, nsamples, ntotal)
-    fname, line = functionloc_safe(mi)
+function print_header(io, pf::ProfiledFunction, ntotal)
+    fname = location(pf)
 
     path = length(relpath(fname)) < length(fname) ? relpath(fname) : fname
     dirname, file = splitdir(path)
 
     print(io, "┌╴ ")
-    Base.with_output_color(
-        (_io) -> Base.show_tuple_as_call(_io, mi.def.name, mi.specTypes; qualified=true),
-        :light_cyan, io,
-        bold=true
-    )
+    if pf isa ProfiledJuliaFunction
+        Base.with_output_color(
+            (_io) -> Base.show_tuple_as_call(_io, pf.mi.def.name, pf.mi.specTypes; qualified=true),
+            :light_cyan, io,
+            bold=true
+        )
+    else
+        color = pf isa ProfiledCFunction ? (:light_magenta) : (:light_cyan)
+        printstyled(io, name(pf), color=color, bold=true)
+        (pf isa ProfiledCFunction) && printstyled(io, " (C function)", color=:light_black)
+    end
     println(io)
 
     print(io, "├╴ ")
     printstyled(io, dirname * Base.Filesystem.pathsep(), color=:light_black)
-    printstyled(io, file, bold=true)
-    printstyled(io, ":$(line)\n", color=:light_black)
+    parts = split(file, ':', limit=2)
+    printstyled(io, parts[1], bold=true)
+
+    (length(parts) > 1) && printstyled(io, ":$(parts[2])", color=:light_black)
+    println(io)
 
     print(io, "├╴ ")
-    samplepct = round(100 * nsamples / ntotal, digits=1)
-    printstyled(io, "$nsamples samples ($(samplepct)%)\n", color=:light_black)
+    samplepct = round(100 * nsamples(pf) / ntotal, digits=1)
+    printstyled(io, "$(nsamples(pf)) samples ($(samplepct)% of total)\n", color=:light_black)
 end
 
 function showprofile(io, data, pf::ProfiledCFunction)
     ips = pf.ips
-
-    start, stop = extrema(ips)
     freqs = countmap(ips)
 
-    print(io, "┌╴ ")
-    printstyled(io, name(pf), color=:light_cyan, bold=true)
-    printstyled(io, " (C function)", color=:light_black)
-    println(io)
-    print(io, "├╴")
-    printstyled(io, location(pf), color=:light_black)
-    println(io)
-    print(io, "├╴")
-    nsamples = length(ips)
-    samplepct = round(100 * nsamples / (length(data.ips)+length(data.c_ips)), digits=1)
-    printstyled(io, "$nsamples samples ($(samplepct)%)\n", color=:light_black)
+    print_header(io, pf, length(data.ips) + length(data.c_ips))
+
     print(io, "└───────────────┐ \n")
 
     ranges = create_addr_ranges(ips)
     for (i, range) in enumerate(ranges)
-        # TODO get rid of the plus 4 somehow...
+        # TODO get rid of the plus 4 (arch dependent)
         addrs, instrs = llvm_disassemble_range(llvm_create_disassembler(), range.first, range.second+4)
         for (addr, instr) in zip(addrs, instrs)
             frac = get(freqs, addr, 0) / length(ips)
@@ -324,7 +302,7 @@ function showprofile(io, data, pf::ProfiledJuliaFunction)
     mi = pf.mi
     i_indices, i_lines = instructionmap(mi)
 
-    lineinstrs = Dict() # Dict{Int, Vector{String}}()
+    lineinstrs = Dict()
     for (fptr, asmlines) in zip(i_indices, i_lines)
         res = lookup(data, fptr)
 
@@ -340,7 +318,7 @@ function showprofile(io, data, pf::ProfiledJuliaFunction)
 
     src, startline = CodeTracking.definition(String, mi.def)
 
-    print_header(io, mi, total, length(data.ips) + length(data.c_ips))
+    print_header(io, pf, length(data.ips) + length(data.c_ips))
 
     for (i, linestr) in enumerate(split(src, "\n"))
         lineno = startline + i - 1
@@ -369,12 +347,12 @@ function showprofile(io, data, pf::ProfiledJuliaFunction)
         if haskey(freqs, lineno) && haskey(lineinstrs, lineno)
             iter = lineinstrs[lineno]
             for (asmlines, fptr) in iter
+
                 for (i, asmline) in enumerate(asmlines)
                     if length(asmline) == 0 || asmline[1] != ';'
                         asmline = (" " ^ (stripped.offset - linestr.offset)) * lstrip(asmline)
                         
                         if haskey(cmap, fptr)
-                            #print(io, cmap[fptr])
                             frac = cmap[fptr] / total
                             color = frac >= 0.05 ? (:red) : (:green)
                             prefix = "$(round(frac*100, digits=1))%"
@@ -401,21 +379,6 @@ function showprofile(io, data, pf::ProfiledJuliaFunction)
     end
 
     println(io)
-end
-
-abstract type CodeLocation end
-
-struct PointerCodeLocation <: CodeLocation
-    ip::UInt64
-end
-
-struct LineCodeLocation <: CodeLocation
-    line::Int
-end
-
-struct CodeTable{T <: PointerCodeLocation}
-    locations::Vector{T}
-    code::Vector{Vector{SubString}}
 end
 
 function instructionmap(linfo)
@@ -448,15 +411,6 @@ function instructionmap(linfo)
     end
 
     return indices, lines
-end
-
-function thing()
-    A = rand(100, 100)
-    B = similar(A)
-    for i = 1:150
-        B = i .+ A^3.14
-    end
-    return B
 end
 
 end # module ProfileTools
