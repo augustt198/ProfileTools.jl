@@ -106,7 +106,7 @@ macro perf(expr, args...)
     sym = gensym("profilee")
     fn_def = quote
         @noinline $(sym)() = for i in 1:$(conf.trials)
-            Base.donotdelete($expr)
+            Base.donotdelete(@noinline $expr)
         end
     end
     Core.eval(__module__, fn_def)
@@ -129,7 +129,7 @@ function paged_io(func, title="Profile Data - (q) to quit")
     flush(io)
     seek(io, 0)
 
-    run(pipeline(io, `less -R -P "$title"`))
+    run(pipeline(io, `less -S -R -P "$title"`))
 end
 
 function printperf(conf, len_start, len_end)
@@ -346,11 +346,15 @@ function showprofile(io, data, pf::ProfiledJuliaFunction)
 
         if haskey(freqs, lineno) && haskey(lineinstrs, lineno)
             iter = lineinstrs[lineno]
-            for (asmlines, fptr) in iter
+            prev_stack = Base.StackFrame[]
 
+            for (asmlines, fptr) in iter
                 for (i, asmline) in enumerate(asmlines)
                     if length(asmline) == 0 || asmline[1] != ';'
-                        asmline = (" " ^ (stripped.offset - linestr.offset)) * lstrip(asmline)
+                        asmline_parts = split(strip(asmline), '\t', limit=2)
+                        asmline = rpad(asmline_parts[1], 8) * join(asmline_parts[2:end])
+                        asmline_length = length(asmline)
+                        asmline = (" " ^ (stripped.offset - linestr.offset)) * asmline
                         
                         if haskey(cmap, fptr)
                             frac = cmap[fptr] / total
@@ -371,6 +375,43 @@ function showprofile(io, data, pf::ProfiledJuliaFunction)
                         print(io, " " ^ (1 + ndigits(lineno)))
                         print(io, "│ ")
                         printstyled(io, asmline, color=:light_blue)
+                        print(io, " " ^ (50 - asmline_length))
+                        
+                        printg(s) = printstyled(io, s, color=:light_black)
+                        printg(";")
+
+                        # draw the inlining stack info
+                        stack = @view lookup(data, fptr)[1:end-1]
+
+                        function print_tree_lines(frames)
+                            for fidx in reverse(keys(frames))
+                                frame = frames[fidx]
+                                len = length(string(frame.func))
+                                print(io, " " ^ (2 + len))
+
+                                (fidx != 1) && printg("│")
+                            end
+                        end
+
+                        if stack != prev_stack
+                            l = min(length(stack), length(prev_stack))
+                            mismatch = findfirst(j -> stack[end-j] != prev_stack[end-j], 0:l-1)
+                            mismatch = isnothing(mismatch) ? 0 : mismatch - 1
+
+                            print_tree_lines(@view prev_stack[end-mismatch+1:end])
+
+                            (mismatch > 0) && printg("├")
+                            for frame in reverse(stack[1:end-mismatch])
+                                printstyled(io, " $(frame.func) ", color=:light_black, bold=true)
+                                (frame == stack[1]) ? printg("┐") : printg("┬")
+                            end
+
+                            prev_stack = stack
+                        else
+                            print_tree_lines(prev_stack)
+                            !isempty(prev_stack) && printg("│")
+                        end
+
                         println(io)
                     end
                 end
