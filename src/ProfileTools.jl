@@ -12,6 +12,16 @@ export @perf
 
 const IPtr = UInt64
 
+function functionloc_safe(mi)
+    try
+        fname, line = functionloc(mi)
+        fname = isnothing(fname) ? "<unknown>" : fname
+        return fname, line
+    catch
+        return "<unknown>", "<unknown>"
+    end
+end
+
 abstract type ProfiledFunction end
 
 struct ProfiledCFunction <: ProfiledFunction
@@ -31,8 +41,8 @@ nsamples(pf::ProfiledFunction) = length(pf.ips)
 
 name(pf::ProfiledJuliaFunction) = pf.mi.def.name
 function location(pf::ProfiledJuliaFunction)
-    fname, line = functionloc(pf.mi)
-    "$fname:$line"
+    fname, line = functionloc_safe(pf.mi)
+    return "$fname:$line"
 end
 
 @kwdef struct ProfileConfig
@@ -149,12 +159,6 @@ struct ProfileData
 end
 
 lookup(data::ProfileData, ip::IPtr) = get!(() -> StackTraces.lookup(ip), data.ip2st, ip)
-
-function functionloc_safe(mi)
-    fname, line = functionloc(mi)
-    fname = isnothing(fname) ? "<unknown>" : fname
-    return fname, line
-end
 
 function terminalIPs(conf, len_start=1, len_end=nothing)
     samples = Profile.fetch(include_meta=true)
@@ -316,7 +320,14 @@ function showprofile(io, data, pf::ProfiledJuliaFunction)
         end
     end
 
-    src, startline = CodeTracking.definition(String, mi.def)
+    codedef = CodeTracking.definition(String, mi.def)
+    if isnothing(codedef)
+        printstyled(io, "ERROR: could not find method definiton", color=:red, bold=true)
+        println(io)
+        return
+    else
+        src, startline = codedef
+    end
 
     print_header(io, pf, length(data.ips) + length(data.c_ips))
 
