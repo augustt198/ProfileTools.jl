@@ -216,6 +216,10 @@ function doit(conf, data=terminalIPs(conf))
 
     julia_functions = Dict{Core.MethodInstance, ProfiledJuliaFunction}()
     for ip in data.ips
+        # no idea why, but some addrs are odd
+        # seems to be related to blr instruction
+        (Sys.ARCH == :aarch64) && (ip &= ~3)
+
         st = lookup(data, ip)
         if !st[end].from_c
             mi = st[end].linfo
