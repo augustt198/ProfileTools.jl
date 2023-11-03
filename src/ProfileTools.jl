@@ -46,9 +46,15 @@ function location(pf::ProfiledJuliaFunction)
 end
 
 @kwdef struct ProfileConfig
-    c_funcs::Bool = false
+    # include C functions in the profile
+    cfuncs::Bool = false
+    # precompile the function first
     precompile::Bool = true
+    # how many trials to run
     trials::Int = 1
+    # if positive, keep profiling until this many
+    # samples are obtained
+    samples::Int = -1
 end
 
 mutable struct ProfileMenu <: TerminalMenus._ConfiguredMenu{TerminalMenus.Config}
@@ -110,6 +116,11 @@ function parse_macro_args(raw_args)
     return ProfileConfig(; kwargs...)
 end
 
+function count_samples_nocopy(start, endd)
+    ptr = Profile.get_data_pointer()
+    return count(iszero(unsafe_load(ptr, i)) for i = max(1, start):endd) ÷ 2
+end
+
 macro perf(expr, args...)
     conf = parse_macro_args(args)
 
@@ -124,7 +135,16 @@ macro perf(expr, args...)
     quote
         len_start = Profile.len_data()
         $(conf.precompile) && precompile($(esc(sym)), ())
-        Profile.@profile $(esc(sym))()
+        nsamples = 0
+        while true
+            this_start = Profile.len_data()
+            Profile.@profile $(esc(sym))()
+
+            nsamples += count_samples_nocopy(this_start, Profile.len_data())
+            if nsamples >= $(conf.samples)
+                break
+            end
+        end
         len_end = Profile.len_data()
 
         printperf($conf, len_start+1, len_end)
@@ -175,7 +195,7 @@ function terminalIPs(conf, len_start=1, len_end=nothing)
             if st[end].from_c
                 # push the IP if c functions are being recorded
                 # otherwise, continue up until a julia IP
-                if conf.c_funcs
+                if conf.cfuncs
                     push!(data.c_ips, ip)
                     first = false
                 end
