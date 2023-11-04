@@ -296,6 +296,84 @@ function print_header(io, pf::ProfiledFunction, ntotal)
     end
 end
 
+function showasm(io, data, lineinstrs, lineno, cmap, total, offset=0)
+    iter = lineinstrs[lineno]
+    prev_stack = Base.StackFrame[]
+
+    for (asmlines, fptr) in iter
+        j′ = 0
+        for (j, asmline) in enumerate(asmlines)
+            if length(asmline) == 0 || asmline[1] != ';'
+                j′ += 1
+
+                asmline_parts = split(strip(asmline), '\t', limit=2)
+                asmline = rpad(asmline_parts[1], 8) * join(asmline_parts[2:end])
+                asmline_length = length(asmline)
+                asmline = (" " ^ offset) * asmline
+                
+                if haskey(cmap, fptr)
+                    frac = cmap[fptr] / total
+                    color = frac >= 0.05 ? (:red) : (:green)
+                    prefix = "$(round(frac*100, digits=1))%"
+                    prefix = lpad(prefix, 6)
+                    if j′ == 1
+                        printstyled(io, prefix, color=color)
+                    elseif j == length(asmline)
+                        printstyled(io, "    └─", color=color)
+                    else
+                        printstyled(io, "    │ ", color=color)
+                    end
+                else
+                    print(io, "      ")
+                end
+
+                print(io, " " ^ (1 + ndigits(lineno)))
+                print(io, "│ ")
+                printstyled(io, asmline, color=:light_blue)
+                print(io, " " ^ (50 - asmline_length))
+                
+                printg(s) = printstyled(io, s, color=:light_black)
+                printg(string(fptr & 0xFFFF, base=16, pad=4))
+                printg("┊")
+
+                # draw the inlining stack info
+                stack = @view lookup(data, fptr)[1:end-1]
+
+                function print_tree_lines(frames)
+                    for fidx in reverse(keys(frames))
+                        frame = frames[fidx]
+                        len = length(string(frame.func))
+                        print(io, " " ^ (2 + len))
+
+                        (fidx != 1) && printg("│")
+                    end
+                end
+
+                if stack != prev_stack
+                    l = min(length(stack), length(prev_stack))
+                    mismatch = findfirst(j -> stack[end-j] != prev_stack[end-j], 0:l-1)
+                    mismatch = isnothing(mismatch) ? 0 : mismatch - 1
+
+                    print_tree_lines(@view prev_stack[end-mismatch+1:end])
+
+                    (mismatch > 0) && printg("├")
+                    for frame in reverse(stack[1:end-mismatch])
+                        printstyled(io, " $(frame.func) ", color=:light_black, bold=true)
+                        (frame == stack[1]) ? printg("┐") : printg("┬")
+                    end
+
+                    prev_stack = stack
+                else
+                    print_tree_lines(prev_stack)
+                    !isempty(prev_stack) && printg("│")
+                end
+
+                println(io)
+            end
+        end
+    end
+end
+
 function showprofile(io, data, pf::ProfiledCFunction)
     ips = pf.ips
     freqs = countmap(ips)
@@ -362,6 +440,7 @@ function showprofile(io, data, pf::ProfiledJuliaFunction)
 
     print_header(io, pf, length(data.ips) + length(data.c_ips))
 
+    lineno = 0
     for (i, linestr) in enumerate(split(src, "\n"))
         lineno = startline + i - 1
 
@@ -384,88 +463,27 @@ function showprofile(io, data, pf::ProfiledJuliaFunction)
         print(io, "$(lineno)│ ")
         print(io, "$linestr\n")
 
-        stripped = lstrip(linestr)
+        offset = (lstrip(linestr).offset - linestr.offset)
 
         if haskey(freqs, lineno) && haskey(lineinstrs, lineno)
-            iter = lineinstrs[lineno]
-            prev_stack = Base.StackFrame[]
-
-            for (asmlines, fptr) in iter
-                j′ = 0
-                for (j, asmline) in enumerate(asmlines)
-                    if length(asmline) == 0 || asmline[1] != ';'
-                        j′ += 1
-
-                        asmline_parts = split(strip(asmline), '\t', limit=2)
-                        asmline = rpad(asmline_parts[1], 8) * join(asmline_parts[2:end])
-                        asmline_length = length(asmline)
-                        asmline = (" " ^ (stripped.offset - linestr.offset)) * asmline
-                        
-                        if haskey(cmap, fptr)
-                            frac = cmap[fptr] / total
-                            color = frac >= 0.05 ? (:red) : (:green)
-                            prefix = "$(round(frac*100, digits=1))%"
-                            prefix = lpad(prefix, 6)
-                            if j′ == 1
-                                printstyled(io, prefix, color=color)
-                            elseif j == length(asmline)
-                                printstyled(io, "    └─", color=color)
-                            else
-                                printstyled(io, "    │ ", color=color)
-                            end
-                        else
-                            print(io, "      ")
-                        end
-
-                        print(io, " " ^ (1 + ndigits(lineno)))
-                        print(io, "│ ")
-                        printstyled(io, asmline, color=:light_blue)
-                        print(io, " " ^ (50 - asmline_length))
-                        
-                        printg(s) = printstyled(io, s, color=:light_black)
-                        printg(string(fptr & 0xFFFF, base=16, pad=4))
-                        printg("┊")
-
-                        # draw the inlining stack info
-                        stack = @view lookup(data, fptr)[1:end-1]
-
-                        function print_tree_lines(frames)
-                            for fidx in reverse(keys(frames))
-                                frame = frames[fidx]
-                                len = length(string(frame.func))
-                                print(io, " " ^ (2 + len))
-
-                                (fidx != 1) && printg("│")
-                            end
-                        end
-
-                        if stack != prev_stack
-                            l = min(length(stack), length(prev_stack))
-                            mismatch = findfirst(j -> stack[end-j] != prev_stack[end-j], 0:l-1)
-                            mismatch = isnothing(mismatch) ? 0 : mismatch - 1
-
-                            print_tree_lines(@view prev_stack[end-mismatch+1:end])
-
-                            (mismatch > 0) && printg("├")
-                            for frame in reverse(stack[1:end-mismatch])
-                                printstyled(io, " $(frame.func) ", color=:light_black, bold=true)
-                                (frame == stack[1]) ? printg("┐") : printg("┬")
-                            end
-
-                            prev_stack = stack
-                        else
-                            print_tree_lines(prev_stack)
-                            !isempty(prev_stack) && printg("│")
-                        end
-
-                        println(io)
-                    end
-                end
-            end
+            showasm(io, data, lineinstrs, lineno, cmap, total, offset)
         end
     end
 
     println(io)
+
+    linerange = startline:lineno
+    any_excluded = false
+    for (line, _) in lineinstrs
+        if line ∉ linerange
+            if !any_excluded
+                printstyled(io, "Unassigned instructions:\n", bold=true)
+                any_excluded = true
+            end
+
+            showasm(io, data, lineinstrs, line, cmap, total)
+        end
+    end
 end
 
 function instructionmap(linfo)
