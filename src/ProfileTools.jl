@@ -288,6 +288,12 @@ function print_header(io, pf::ProfiledFunction, ntotal)
     print(io, "├╴ ")
     samplepct = round(100 * nsamples(pf) / ntotal, digits=1)
     printstyled(io, "$(nsamples(pf)) samples ($(samplepct)% of total)\n", color=:light_black)
+
+    if pf isa ProfiledJuliaFunction
+        print(io, "├╴ ")
+        fptr = string(UInt64(pf.mi.cache.specptr), base=16, pad=16)
+        printstyled(io, "Code address 0x$fptr\n", color=:light_black)
+    end
 end
 
 function showprofile(io, data, pf::ProfiledCFunction)
@@ -322,6 +328,7 @@ function showprofile(io, data, pf::ProfiledCFunction)
 end
 
 function showprofile(io, data, pf::ProfiledJuliaFunction)
+    # make this less silly
     lines = map(ip -> lookup(data, ip)[end].line, pf.ips)
     cmap = countmap(pf.ips)
     freqs = countmap(lines)
@@ -384,8 +391,11 @@ function showprofile(io, data, pf::ProfiledJuliaFunction)
             prev_stack = Base.StackFrame[]
 
             for (asmlines, fptr) in iter
-                for (i, asmline) in enumerate(asmlines)
+                j′ = 0
+                for (j, asmline) in enumerate(asmlines)
                     if length(asmline) == 0 || asmline[1] != ';'
+                        j′ += 1
+
                         asmline_parts = split(strip(asmline), '\t', limit=2)
                         asmline = rpad(asmline_parts[1], 8) * join(asmline_parts[2:end])
                         asmline_length = length(asmline)
@@ -396,12 +406,12 @@ function showprofile(io, data, pf::ProfiledJuliaFunction)
                             color = frac >= 0.05 ? (:red) : (:green)
                             prefix = "$(round(frac*100, digits=1))%"
                             prefix = lpad(prefix, 6)
-                            if i == 1
+                            if j′ == 1
                                 printstyled(io, prefix, color=color)
-                            elseif i == length(asmline)
-                                printstyled(io, "    │ ", color=color)
-                            else
+                            elseif j == length(asmline)
                                 printstyled(io, "    └─", color=color)
+                            else
+                                printstyled(io, "    │ ", color=color)
                             end
                         else
                             print(io, "      ")
@@ -413,7 +423,8 @@ function showprofile(io, data, pf::ProfiledJuliaFunction)
                         print(io, " " ^ (50 - asmline_length))
                         
                         printg(s) = printstyled(io, s, color=:light_black)
-                        printg(";")
+                        printg(string(fptr & 0xFFFF, base=16, pad=4))
+                        printg("┊")
 
                         # draw the inlining stack info
                         stack = @view lookup(data, fptr)[1:end-1]
