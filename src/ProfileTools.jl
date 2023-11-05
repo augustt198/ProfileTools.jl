@@ -400,7 +400,12 @@ function showasm(io, data, lineinstrs, lineno, cmap, total, offset=0)
                     (mismatch > 0) && printg("├")
                     for frame in reverse(stack[1:end-mismatch])
                         printstyled(io, " $(frame.func) ", color=:light_black, bold=true)
-                        (frame == stack[1]) ? printg("┐") : printg("┬")
+                        if frame == stack[1]
+                            printg("┐")
+                            printg("  ($(splitdir(string(frame.file))[2]):$(frame.line))")
+                        else
+                            printg("┬")
+                        end
                     end
 
                     prev_stack = stack
