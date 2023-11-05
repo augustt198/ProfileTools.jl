@@ -169,11 +169,21 @@ function printperf(conf, len_start, len_end)
     return
 end
 
+struct FrequencyMap{K}
+    dict::Dict{K, Int}
+
+    FrequencyMap{K}(d=Dict{K, Int}()) where {K} = new(d)
+end
+
+getfreq(fm::FrequencyMap{T}, x::T) where {T} = get(fm.dict, x, 0)
+incfreq(fm::FrequencyMap{T}, x::T, inc=1) where {T} = fm.dict[x] = getfreq(fm, x) + inc
+merge(a::FrequencyMap{T}, b::FrequencyMap{T}) where {T} = FrequencyMap{T}(mergewith(+)(a.dict, b.dict))
+
 struct ProfileData
     ips::Vector{IPtr}
     c_ips::Vector{IPtr}
     ip2st::Dict{IPtr, Vector{StackTraces.StackFrame}}
-    c_callees::Dict{IPtr, Vector{IPtr}}
+    callers::Dict{IPtr, FrequencyMap{IPtr}}
 
     ProfileData() = new([], [], Dict(), Dict())
 end
@@ -188,23 +198,35 @@ function terminalIPs(conf, len_start=1, len_end=nothing)
 
     data = ProfileData()
 
-    first = true
+    first, second = true, true
+    called_ip = 0
     for ip in samples
+        # stackwalk.c subtracts one sometimes,
+        # so re-align the ip on arm
+        (Sys.ARCH == :aarch64) && (ip &= ~3)
+
         if first
             st = lookup(data, ip)
             if st[end].from_c
                 # push the IP if c functions are being recorded
                 # otherwise, continue up until a julia IP
                 if conf.cfuncs
+                    called_ip = ip
                     push!(data.c_ips, ip)
                     first = false
                 end
             else
+                called_ip = ip
                 push!(data.ips, ip)
                 first = false
             end
         else
-            (ip == 0) && (first = true)
+            if second && ip != 0
+                fm = get!(() -> FrequencyMap{IPtr}(), data.callers, called_ip)
+                incfreq(fm, ip)
+            end
+            second = false
+            (ip == 0) && (first = second = true)
         end
     end
 
@@ -216,10 +238,6 @@ function doit(conf, data=terminalIPs(conf))
 
     julia_functions = Dict{Core.MethodInstance, ProfiledJuliaFunction}()
     for ip in data.ips
-        # stackwalk.c subtracts one sometimes,
-        # so re-align the ip on arm
-        (Sys.ARCH == :aarch64) && (ip &= ~3)
-
         st = lookup(data, ip)
         if !st[end].from_c
             mi = st[end].linfo
@@ -257,7 +275,7 @@ function doit(conf, data=terminalIPs(conf))
     return
 end
 
-function print_header(io, pf::ProfiledFunction, ntotal)
+function print_header(io, data, pf::ProfiledFunction, ntotal)
     fname = location(pf)
 
     path = length(relpath(fname)) < length(fname) ? relpath(fname) : fname
@@ -293,6 +311,29 @@ function print_header(io, pf::ProfiledFunction, ntotal)
         print(io, "├╴ ")
         fptr = string(UInt64(pf.mi.cache.specptr), base=16, pad=16)
         printstyled(io, "Code address 0x$fptr\n", color=:light_black)
+    end
+
+    fm = reduce(merge, [get(() -> FrequencyMap{IPtr}(), data.callers, ip) for ip in unique(pf.ips)])
+
+    print(io, "├╴ ")
+    printstyled(io, "Callers: $(isempty(fm.dict) ? "unknown" : "")\n", color=:light_black)
+
+    fm′ = FrequencyMap{Tuple{Symbol, Symbol, Int}}()
+    for (ip, count) in fm.dict
+        frame = lookup(data, ip)[end]
+        incfreq(fm′, (frame.func, frame.file, frame.line), count)
+    end
+
+    sorted_fm′ = sort(collect(fm′.dict), by = p -> p.second, rev=true)
+    for (tup, count) in sorted_fm′
+        func, file, line = tup
+        samplepct = round(100 * count / nsamples(pf), digits=1)
+        line = (line >= 0) ? line : "?"
+        print(io, "│    ")
+        printstyled(io, "($(samplepct)%) ", color=:light_black)
+        printstyled(io, "$(func) ")
+        printstyled(io, "in $(splitdir(string(file))[2]):$(line)", color=:light_black)
+        println(io)
     end
 end
 
@@ -378,7 +419,7 @@ function showprofile(io, data, pf::ProfiledCFunction)
     ips = pf.ips
     freqs = countmap(ips)
 
-    print_header(io, pf, length(data.ips) + length(data.c_ips))
+    print_header(io, data, pf, length(data.ips) + length(data.c_ips))
 
     print(io, "└───────────────┐ \n")
 
@@ -438,7 +479,7 @@ function showprofile(io, data, pf::ProfiledJuliaFunction)
         src, startline = codedef
     end
 
-    print_header(io, pf, length(data.ips) + length(data.c_ips))
+    print_header(io, data, pf, length(data.ips) + length(data.c_ips))
 
     lineno = 0
     for (i, linestr) in enumerate(split(src, "\n"))
