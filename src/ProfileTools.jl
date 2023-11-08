@@ -337,12 +337,28 @@ function print_header(io, data, pf::ProfiledFunction, ntotal)
     end
 end
 
-function showasm(io, data, lineinstrs, lineno, cmap, total, offset=0)
+function showasm(io, data, iptrs, lineinstrs, lineno, cmap, total, offset=0)
     iter = lineinstrs[lineno]
     prev_stack = Base.StackFrame[]
 
+    lastaddr = 0
     for (asmlines, fptr) in iter
         j′ = 0
+
+        idx = searchsortedlast(iptrs, fptr - 1)
+        if lastaddr != 0 && idx > 0
+            if iptrs[idx] != lastaddr
+                # there's a gap in the instructions
+                gap = fptr - lastaddr
+                print(io, " " ^ (7 + ndigits(lineno)))
+                print(io, "│ ")
+                print(io, " " ^ (offset + 44))
+                printstyled(io, lpad("(+$gap)", 10), color=:light_black)
+                println(io)
+            end
+        end
+        lastaddr = fptr
+
         for (j, asmline) in enumerate(asmlines)
             if length(asmline) == 0 || asmline[1] != ';'
                 j′ += 1
@@ -512,7 +528,7 @@ function showprofile(io, data, pf::ProfiledJuliaFunction)
         offset = (lstrip(linestr).offset - linestr.offset)
 
         if haskey(freqs, lineno) && haskey(lineinstrs, lineno)
-            showasm(io, data, lineinstrs, lineno, cmap, total, offset)
+            showasm(io, data, i_indices, lineinstrs, lineno, cmap, total, offset)
         end
     end
 
@@ -527,7 +543,7 @@ function showprofile(io, data, pf::ProfiledJuliaFunction)
                 any_excluded = true
             end
 
-            showasm(io, data, lineinstrs, line, cmap, total)
+            showasm(io, data, i_indices, lineinstrs, line, cmap, total)
         end
     end
 end
