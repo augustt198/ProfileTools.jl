@@ -342,14 +342,14 @@ function showasm(io, data, iptrs, lineinstrs, lineno, cmap, total, offset=0)
     prev_stack = Base.StackFrame[]
 
     lastaddr = 0
-    for (asmlines, fptr) in iter
+    for (asmlines, iptr) in iter
         j′ = 0
 
-        idx = searchsortedlast(iptrs, fptr - 1)
+        idx = searchsortedlast(iptrs, iptr - 1)
         if lastaddr != 0 && idx > 0
             if iptrs[idx] != lastaddr
                 # there's a gap in the instructions
-                gap = fptr - lastaddr
+                gap = iptr - lastaddr
                 print(io, " " ^ (7 + ndigits(lineno)))
                 print(io, "│ ")
                 print(io, " " ^ (offset + 44))
@@ -357,7 +357,7 @@ function showasm(io, data, iptrs, lineinstrs, lineno, cmap, total, offset=0)
                 println(io)
             end
         end
-        lastaddr = fptr
+        lastaddr = iptr
 
         for (j, asmline) in enumerate(asmlines)
             if length(asmline) == 0 || asmline[1] != ';'
@@ -368,8 +368,8 @@ function showasm(io, data, iptrs, lineinstrs, lineno, cmap, total, offset=0)
                 asmline_length = length(asmline)
                 asmline = (" " ^ offset) * asmline
                 
-                if haskey(cmap, fptr)
-                    frac = cmap[fptr] / total
+                if haskey(cmap, iptr)
+                    frac = cmap[iptr] / total
                     color = frac >= 0.05 ? (:red) : (:green)
                     prefix = "$(round(frac*100, digits=1))%"
                     prefix = lpad(prefix, 6)
@@ -390,11 +390,11 @@ function showasm(io, data, iptrs, lineinstrs, lineno, cmap, total, offset=0)
                 print(io, " " ^ (50 - asmline_length))
                 
                 printg(s) = printstyled(io, s, color=:light_black)
-                printg(string(fptr & 0xFFFF, base=16, pad=4))
+                printg(string(iptr & 0xFFFF, base=16, pad=4))
                 printg("┊")
 
                 # draw the inlining stack info
-                stack = @view lookup(data, fptr)[1:end-1]
+                stack = @view lookup(data, iptr)[1:end-1]
 
                 function print_tree_lines(frames)
                     for fidx in reverse(keys(frames))
@@ -478,15 +478,15 @@ function showprofile(io, data, pf::ProfiledJuliaFunction)
     i_indices, i_lines = instructionmap(mi)
 
     lineinstrs = Dict()
-    for (fptr, asmlines) in zip(i_indices, i_lines)
-        res = lookup(data, fptr)
+    for (iptr, asmlines) in zip(i_indices, i_lines)
+        res = lookup(data, iptr)
 
         if res[end].linfo == mi
             line = res[end].line
             if !haskey(lineinstrs, line)
-                lineinstrs[line] = [(asmlines, fptr)]
+                lineinstrs[line] = [(asmlines, iptr)]
             else
-                push!(lineinstrs[line], (asmlines, fptr))
+                push!(lineinstrs[line], (asmlines, iptr))
             end
         end
     end
