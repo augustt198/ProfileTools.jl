@@ -45,7 +45,7 @@ function location(pf::ProfiledJuliaFunction)
     return "$fname:$line"
 end
 
-@kwdef struct ProfileConfig
+Base.@kwdef struct ProfileConfig
     # include C functions in the profile
     cfuncs::Bool = false
     # precompile the function first
@@ -305,12 +305,16 @@ function print_header(io, data, pf::ProfiledFunction, ntotal)
 
     print(io, "├╴ ")
     samplepct = round(100 * nsamples(pf) / ntotal, digits=1)
-    printstyled(io, "$(nsamples(pf)) samples ($(samplepct)% of total)\n", color=:light_black)
+    print(io, nsamples(pf))
+    printstyled(io, " samples (", color=:light_black)
+    print(io, "$(samplepct)%")
+    printstyled(io, " of total)\n", color=:light_black)
 
     if pf isa ProfiledJuliaFunction
-        print(io, "├╴ ")
         fptr = string(UInt64(pf.mi.cache.specptr), base=16, pad=16)
-        printstyled(io, "Code address 0x$fptr\n", color=:light_black)
+        print(io, "├╴ ")
+        printstyled(io, "Code address ", color=:light_black)
+        println(io, "0x$fptr")
     end
 
     fm = reduce(merge, [get(() -> FrequencyMap{IPtr}(), data.callers, ip) for ip in unique(pf.ips)])
