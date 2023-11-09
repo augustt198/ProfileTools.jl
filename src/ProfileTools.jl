@@ -447,7 +447,13 @@ function showprofile(io, data, pf::ProfiledCFunction)
     ranges = create_addr_ranges(ips)
     for (i, range) in enumerate(ranges)
         # TODO get rid of the plus 4 (arch dependent)
-        addrs, instrs = llvm_disassemble_range(llvm_create_disassembler(), range.first, range.second+4)
+        result = llvm_disassemble_range(llvm_create_disassembler(), range.first, range.second+4)
+        if isnothing(result)
+            printstyled(io, "Failed to disassemble address range: $range\n", color=:red, bold=true)
+            continue
+        end
+
+        addrs, instrs = result
         for (addr, instr) in zip(addrs, instrs)
             frac = get(freqs, addr, 0) / length(ips)
             color = frac >= 0.05 ? (:red) : (:green)

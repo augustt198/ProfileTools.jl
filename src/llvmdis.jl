@@ -13,12 +13,12 @@ function nullstring!(x::Vector{UInt8})
     SubString(String(x),1,i-1)
 end
 
-function llvm_disassemble_instruction(disassembler, data::AbstractVector{UInt8}, pc::UInt64)
+function llvm_disassemble_instruction(disassembler, data::AbstractVector{UInt8}, dataidx, pc::UInt64)
     buf = zeros(UInt8, 256)
     sz = ccall(:jl_LLVMDisasmInstruction,
             Csize_t,
             (Ptr{Cvoid}, Ptr{UInt8}, UInt64, UInt64, Ptr{Cchar}, Csize_t),
-            disassembler, data, length(data), pc, buf, length(buf))
+            disassembler, pointer(data, dataidx), length(data) - dataidx + 1, pc, buf, length(buf))
     
     return nullstring!(buf), sz
 end
@@ -28,8 +28,11 @@ function llvm_disassemble_multiple(disassembler, data::AbstractVector{UInt8}, pc
 
     offset = 0
     while offset < length(data)
-        offset_data = @view data[begin+offset:end]
-        str, sz = llvm_disassemble_instruction(disassembler, offset_data, pc + offset)
+        str, sz = llvm_disassemble_instruction(disassembler, data, offset + 1, pc + offset)
+
+        if sz < 1 # something went wrong
+            return nothing
+        end
 
         push!(addrs, pc + offset)
         push!(instrs, str)
